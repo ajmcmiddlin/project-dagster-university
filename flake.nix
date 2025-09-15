@@ -36,7 +36,12 @@
               patchedPython
               uv
               python312Packages.python-lsp-server
+              duckdb
             ];
+
+          shellHook = ''
+            export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+          '';
         };
       });
 }
