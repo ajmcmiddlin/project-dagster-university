@@ -20,6 +20,8 @@ dependencies = [
 dev-dependencies = [
     "ruff",
     "pytest",
+    "jedi-language-server",
+    "ty"
 ]
 
 [build-system]

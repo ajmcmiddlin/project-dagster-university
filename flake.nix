@@ -35,6 +35,7 @@
             [
               patchedPython
               uv
+              python312Packages.python-lsp-server
             ];
         };
       });
