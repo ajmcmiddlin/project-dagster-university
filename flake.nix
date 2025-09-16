@@ -33,9 +33,17 @@
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs;
             [
+              # Python + tools
               patchedPython
               uv
+
+              # LSP/dev tools
+              ty
               python312Packages.python-lsp-server
+              python312Packages.ruff
+              python312Packages.jedi-language-server
+
+              # To play with our data more easily
               duckdb
             ];
 

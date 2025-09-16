@@ -18,9 +18,7 @@ dependencies = [
 
 [tool.uv]
 dev-dependencies = [
-    "ruff",
     "pytest",
-    "jedi-language-server",
     "ty"
 ]
 
