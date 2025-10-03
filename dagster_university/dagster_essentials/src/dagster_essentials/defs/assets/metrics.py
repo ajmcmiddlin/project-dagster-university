@@ -9,6 +9,7 @@ import pandas as pd
 from dagster_duckdb import DuckDBResource
 
 from dagster_essentials.defs.assets import constants
+from dagster_essentials.defs.partitions import weekly_partition
 
 
 @dg.asset(
@@ -60,54 +61,42 @@ def manhattan_map() -> None:
     plt.close(fig)
 
 @dg.asset(
-    deps = ["taxi_trips"]
+    deps = ["taxi_trips"],
+    partitions_def=weekly_partition
 )
-def trips_by_week(database: DuckDBResource) -> None:
+def trips_by_week(context: dg.AssetExecutionContext, database: DuckDBResource) -> None:
     """
         CSV of trip data aggregated by week
     """
 
+    week_of_data_query = '''
+        SELECT
+            DATE(pickup_datetime - INTERVAL (dayofweek(pickup_datetime)) DAY) as period,
+            COUNT(*) as num_trips,
+            SUM(passenger_count) as passenger_count,
+            SUM(total_amount) as total_amount,
+            SUM(trip_distance) as trip_distance
+        FROM trips
+        GROUP BY period
+        HAVING period = '{}'
+    '''
+    week_of_data_query_formatted = week_of_data_query.format(context.partition_key)
+
     with database.get_connection() as conn:
-        def get_week_of_data(sunday: datetime.date) -> pd.DataFrame:
-            """
-                Given the date of a Sunday, retrieve a summary of the trips for the
-                week starting on that Sunday.
-            """
+        df = conn.execute(week_of_data_query_formatted).fetch_df()
 
-            week_of_data_query = '''
-                SELECT
-                    DATE(pickup_datetime - INTERVAL (dayofweek(pickup_datetime)) DAY) as period,
-                    COUNT(*) as num_trips,
-                    SUM(passenger_count) as passenger_count,
-                    SUM(total_amount) as total_amount,
-                    SUM(trip_distance) as trip_distance
-                FROM trips
-                GROUP BY period
-                HAVING period = '{}'
-            '''
-            week_of_data_query_formatted = week_of_data_query.format(sunday.isoformat())
+    df["period"] = df["period"].astype(str)
+    df["num_trips"] = df["num_trips"].astype(int)
+    df["passenger_count"] = df["passenger_count"].astype(int)
+    df["total_amount"] = df["total_amount"].round(2).astype("float")
+    df["trip_distance"] = df["trip_distance"].round(2).astype("float")
+    df = df.sort_values(by="period")
 
-            week_of_data = conn.execute(week_of_data_query_formatted).fetch_df()
-
-            return week_of_data
-
-        sundays_query = """
-            SELECT distinct(DATE(pickup_datetime - INTERVAL (dayofweek(pickup_datetime)) DAY)) as sunday
-            FROM trips;
-        """
-
-        sunday_rows = conn.execute(sundays_query).fetchall()
-        sundays = [r[0] for r in sunday_rows]
-
-        df = pd.DataFrame()
-
-        for sunday in sundays:
-            week_of_data = get_week_of_data(sunday)
-            df = pd.concat([df, week_of_data])
-
-        df["num_trips"] = df["num_trips"].astype(int)
-        df["passenger_count"] = df["passenger_count"].astype(int)
-        df["total_amount"] = df["total_amount"].round(2).astype("float")
-        df["trip_distance"] = df["trip_distance"].round(2).astype("float")
-        df = df.sort_values(by="period")
+    try:
+        existing = pd.read_csv(constants.TRIPS_BY_WEEK_FILE_PATH)
+        existing["period"] = existing["period"].astype(str)
+        existing[existing["period"] != str(context.partition_key)]
+        pd.concat([existing, df]).sort_values(by="period")
+        existing.to_csv(constants.TRIPS_BY_WEEK_FILE_PATH, index=False)
+    except FileNotFoundError:
         df.to_csv(constants.TRIPS_BY_WEEK_FILE_PATH, index=False)
