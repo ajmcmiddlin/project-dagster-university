@@ -3,17 +3,27 @@ import dagster as dg
 from dagster_duckdb import DuckDBResource
 from dagster_essentials.defs.assets import constants
 from dagster._utils.backoff import backoff
+from dagster_essentials.defs.partitions import monthly_partition
 
-MONTH_TO_FETCH = "2023-03"
+def get_partition_month(context: dg.AssetExecutionContext) -> str:
+    """
+        Gets the partition key from the context and drops the last 3
+        characters. The last three characters are the "-DD" part of
+        the date, but the NYC data uses "YYYY-MM" as its date format.
+    """
+    return context.partition_key[:-3]
 
-@dg.asset
-def taxi_trips_file() -> None:
+@dg.asset(
+    partitions_def=monthly_partition
+)
+def taxi_trips_file(context: dg.AssetExecutionContext) -> None:
     """
         The raw parquet file with trips in it.
     """
-    raw_trips = requests.get(f"https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{MONTH_TO_FETCH}.parquet")
+    month_to_fetch = get_partition_month(context)
+    raw_trips = requests.get(f"https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{month_to_fetch}.parquet")
 
-    with open(constants.TAXI_TRIPS_TEMPLATE_FILE_PATH.format(MONTH_TO_FETCH), "wb") as output_file:
+    with open(constants.TAXI_TRIPS_TEMPLATE_FILE_PATH.format(month_to_fetch), "wb") as output_file:
         output_file.write(raw_trips.content)
 
 @dg.asset
@@ -28,29 +38,37 @@ def taxi_zones_file() -> None:
 
 # src/dagster_essentials/defs/assets/trips.py
 @dg.asset(
-    deps=["taxi_trips_file"]
+    deps=["taxi_trips_file"],
+    partitions_def=monthly_partition
 )
-def taxi_trips(database: DuckDBResource) -> None:
+def taxi_trips(context: dg.AssetExecutionContext, database: DuckDBResource) -> None:
     """
       The raw taxi trips dataset, loaded into a DuckDB database
     """
+    partition_month = get_partition_month(context)
     _query = """
-        create or replace table trips as (
-          select
-            VendorID as vendor_id,
-            PULocationID as pickup_zone_id,
-            DOLocationID as dropoff_zone_id,
-            RatecodeID as rate_code_id,
-            payment_type as payment_type,
-            tpep_dropoff_datetime as dropoff_datetime,
-            tpep_pickup_datetime as pickup_datetime,
-            trip_distance as trip_distance,
-            passenger_count as passenger_count,
-            total_amount as total_amount
-          from '{}'
+        create table if not exists trips (
+            vendor_id integer, pickup_zone_id integer, dropoff_zone_id integer,
+            rate_code_id double, payment_type integer, dropoff_datetime timestamp,
+            pickup_datetime timestamp, trip_distance double, passenger_count double,
+            total_amount double, partition_date varchar
         );
-    """
-    query = _query.format(constants.TAXI_TRIPS_TEMPLATE_FILE_PATH.format(MONTH_TO_FETCH))
+
+        delete from trips
+        where partition_date = '{partition_month}';
+
+        insert into trips (
+            select VendorID, PULocationID, DOLocationID, RatecodeID, payment_type,
+                   tpep_dropoff_datetime, tpep_pickup_datetime, trip_distance,
+                   passenger_count, total_amount, '{partition_month}' as partition_date
+            from '{trips_file}'
+        );
+        """
+
+    query = _query.format_map({
+        "trips_file": constants.TAXI_TRIPS_TEMPLATE_FILE_PATH.format(partition_month),
+        "partition_month": partition_month
+    })
 
     with database.get_connection() as conn:
         conn.execute(query)
